@@ -14,6 +14,7 @@ import base64
 from PIL import Image
 from matplotlib.patches import RegularPolygon
 import time
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 # フォント設定 - 文字化け防止
 plt.rcParams['font.family'] = 'sans-serif'
@@ -92,13 +93,13 @@ class SoundBall:
         self.edges = get_polygon_edges(vertices)
         self.radius = radius
         self.max_reflections = max_reflections
-
+    
     def update(self, ball_speed):
         if not self.is_active:
             return
 
         current_pos = self.positions[-1]
-        sub_steps = 10  # Reduced from 20 to improve performance
+        sub_steps = 20  # Reduced from 20 to improve performance
         small_step = ball_speed / sub_steps
 
         for _ in range(sub_steps):
@@ -144,7 +145,7 @@ class SoundBall:
                     self.reflection_count += 1
                     
                     # Move to reflected position
-                    current_pos = collision_point + edge_normal * 0.01
+                    current_pos = collision_point + edge_normal * 0.015
                     
                     if self.reflection_count >= self.max_reflections:
                         self.is_active = False
@@ -166,8 +167,8 @@ class SoundBall:
                         closest_vertex = vertex
                 
                 # Only do detailed check if we're close to a vertex
-                if closest_vertex_dist < 0.1:  # Wider threshold for initial check
-                    if closest_vertex_dist < 0.05:  # Actual collision threshold
+                if closest_vertex_dist < 0.12:  # Wider threshold for initial check
+                    if closest_vertex_dist < 0.06:  # Actual collision threshold
                         # Calculate reflection direction from vertex
                         vertex_to_ball = current_pos - closest_vertex
                         vertex_to_ball = vertex_to_ball / np.linalg.norm(vertex_to_ball)
@@ -181,7 +182,7 @@ class SoundBall:
                             return
                             
                         # Move away from vertex
-                        current_pos = closest_vertex + vertex_to_ball * 0.1
+                        current_pos = closest_vertex + vertex_to_ball * 0.12
                         vertex_collision = True
                 
                 if not vertex_collision:
@@ -281,6 +282,8 @@ def run_simulation():
         source_y = st.session_state.source_y
         num_balls = st.session_state.num_balls
         max_reflections = st.session_state.max_reflections
+        # 重要: 最大反射回数が5以下であることを確認
+        max_reflections = min(max_reflections, 5)
         particle_size = st.session_state.particle_size
         grid_spacing = st.session_state.grid_spacing
 
@@ -288,9 +291,12 @@ def run_simulation():
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        # 強制終了ボタン用のプレースホルダ
+        stop_button_placeholder = st.empty()
+        
         # 定数
-        BALL_SPEED = 0.05
-        MAX_STEPS = 100  # Streamlitでは短めのアニメーションにする
+        BALL_SPEED = st.session_state.ball_speed  # UIで設定した速度を使用
+        MAX_STEPS = 1000  # 元のPolygonバージョンと同じ
         
         # 多角形の設定
         center = np.array([0, 0])
@@ -306,6 +312,9 @@ def run_simulation():
             direction = np.array([np.cos(angle), np.sin(angle)])
             ball = SoundBall(SOURCE_POS, direction, vertices, radius, max_reflections)
             balls.append(ball)
+        
+        # シミュレーション開始時の状態を表示
+        print(f"Starting simulation with {num_balls} balls, max reflections: {max_reflections}")
         
         # アニメーションフレームを格納するリスト
         frames = []
@@ -352,26 +361,112 @@ def run_simulation():
         
         # 各フレームを生成
         empty_frames = 0
+        
+        # 強制終了フラグ
+        stop_simulation = False
+        
+        # 強制終了ボタンを表示
+        if stop_button_placeholder.button("シミュレーション強制終了", key="stop_button"):
+            stop_simulation = True
+            status_text.text("シミュレーションを強制終了しました。アニメーションを生成中...")
+            
         for frame in range(MAX_STEPS):
+            # 強制終了ボタンがクリックされたかチェック
+            if stop_simulation:
+                break
+            
             # ボールの更新
             active_balls = [ball for ball in balls if ball.is_active]
+            
+            # 現在のアクティブボール数を表示（10フレームごと）
+            if frame % 10 == 0:
+                print(f"Frame {frame}: Active balls: {len(active_balls)}/{len(balls)}")
+            
             for ball in active_balls:
                 ball.update(BALL_SPEED)
             
             # スキャッタープロットの更新
             if active_balls:
                 empty_frames = 0
-                positions = np.array([ball.positions[-1] for ball in active_balls])
-                ax.scatter(positions[:, 0], positions[:, 1], s=particle_size, alpha=0.5, label='_nolegend_' if frame > 0 else 'Particles')
+                
+                # 反射回数でグループ化して異なる色で表示
+                for reflection_count in range(max_reflections + 1):
+                    balls_with_reflection = [ball for ball in active_balls if ball.reflection_count == reflection_count]
+                    if balls_with_reflection:
+                        positions = np.array([ball.positions[-1] for ball in balls_with_reflection])
+                        # 反射回数に応じた色を設定
+                        colors = ['blue', 'cyan', 'green', 'yellow', 'orange', 'red']
+                        color = colors[min(reflection_count, len(colors)-1)]
+                        label = f"{reflection_count}回反射" if frame == 0 else "_nolegend_"
+                        ax.scatter(positions[:, 0], positions[:, 1], s=particle_size, 
+                                  color=color, alpha=0.7, label=label)
             else:
                 empty_frames += 1
-                if empty_frames >= 10:  # Streamlitでは早めに停止
-                    status_text.text(f"全てのボールが停止しました。フレーム {frame}/{MAX_STEPS}")
+                if empty_frames >= 100:  # 非アクティブ判定を大幅に緩和（より長く観察可能に）
+                    inactive_count = len(balls) - len(active_balls)
+                    inactive_percent = inactive_count / len(balls) * 100
+                    status_text.text(f"シミュレーション終了：完了: {inactive_count}個 ({inactive_percent:.1f}%) | 全てのボールが非アクティブになりました")
                     break
+            
+            # 反射回数の統計情報を計算
+            # 最大反射回数に達したボールの数（非アクティブなボールも含む）
+            reached_max_reflection = [ball for ball in balls if ball.reflection_count >= max_reflections]
+            # ちょうど最大反射回数に達したボールの数（非アクティブなボールも含む）
+            exact_max_reflection = [ball for ball in balls if ball.reflection_count == max_reflections]
+            # 最大反射回数に達したボールの位置を表示（現在アクティブかに関わらず）
+            completed_positions = np.array([ball.positions[-1] for ball in reached_max_reflection]) if reached_max_reflection else np.empty((0, 2))
+            if len(completed_positions) > 0:
+                ax.scatter(completed_positions[:, 0], completed_positions[:, 1], s=particle_size*1.5, 
+                          color='red', alpha=0.7, marker='x')  # 最大反射回数に達したボールを赤い×で表示
+            avg_reflections = sum(ball.reflection_count for ball in balls) / len(balls)
+            
+            # 反射回数の状況をステータスに表示
+            status_percent = len(reached_max_reflection) / len(balls) * 100
+            inactive_count = len(balls) - len(active_balls)
+            inactive_percent = inactive_count / len(balls) * 100
+            status_text.text(
+                f"フレーム: {frame}/{MAX_STEPS} | " 
+                f"アクティブ粒子: {len(active_balls)}/{len(balls)} | "
+                f"平均反射: {avg_reflections:.1f}/{max_reflections} | "
+                f"完了: {inactive_count}個 ({inactive_percent:.1f}%)"
+            )
+            
+            # フレーム数と音速換算時間をプロットに表示
+            # 音速: 340m/s での時間換算 (ms)
+            sound_speed = 340  # m/s
+            
+            # 1フレームあたりの移動距離(m)に基づいて時間を計算
+            # ボールの速度(m/フレーム) ÷ 音速(m/s) = 時間(s/フレーム)
+            time_per_frame_s = BALL_SPEED / sound_speed  # 1フレームあたりの時間（秒）
+            total_time_ms = frame * time_per_frame_s * 1000  # 合計時間（ミリ秒）
+            
+            # 距離も表示（フレーム数 × ボールの速度）
+            distance_m = frame * BALL_SPEED  # 移動した距離（メートル）
+            
+            time_text = f"Frame: {frame} | Distance: {distance_m:.2f} m | Time: {total_time_ms:.2f} ms (Sound speed: 340 m/s)"
+            
+            # 以前のテキストがあれば削除
+            for txt in ax.texts:
+                if hasattr(txt, 'counter_text'):
+                    txt.remove()
+            
+            # 新しいテキストを追加
+            text = ax.text(0.02, 0.98, time_text, transform=ax.transAxes, 
+                          fontsize=14, weight='bold', verticalalignment='top', 
+                          bbox=dict(boxstyle='round', facecolor='lightyellow', edgecolor='black', alpha=0.9))
+            text.counter_text = True  # 識別用の属性を追加
+            
+            # 全ての粒子が最大反射回数に達したかチェック（非アクティブになったかで判断）
+            if len(active_balls) == 0:
+                status_text.text(f"シミュレーション完了！完了: {len(balls)}個 (100%) | 全ての粒子が非アクティブになりました")
+                break
             
             # フレームを画像として保存
             fig.canvas.draw()
-            img = Image.frombytes('RGB', fig.canvas.get_width_height(), fig.canvas.tostring_rgb())
+            canvas = FigureCanvas(fig)
+            canvas.draw()
+            buf = np.asarray(canvas.buffer_rgba())
+            img = Image.fromarray(buf)
             frames.append(img)
             
             # 不要な散布図を削除（メモリ節約）
@@ -382,13 +477,33 @@ def run_simulation():
             
             # プログレスバーとステータスの更新
             if frame % frame_interval == 0:
-                progress = min(1.0, (frame + 1) / MAX_STEPS)
+                # 完了率（％）に基づいてプログレスバーを更新
+                # 1. 非アクティブになったボールの割合
+                # 2. 全ボールの平均反射回数の割合
+                completion_by_inactive = inactive_percent / 100.0  # 非アクティブボールの割合（0～1）
+                completion_by_reflection = avg_reflections / max_reflections  # 平均反射回数の割合（0～1）
+                
+                # 両方の指標を組み合わせて総合的な完了率を計算
+                # 非アクティブ率を優先し、残りを平均反射率で補完
+                progress = completion_by_inactive + (1.0 - completion_by_inactive) * completion_by_reflection
+                progress = min(1.0, progress)  # 1.0を超えないように
                 progress_bar.progress(progress)
-                status_text.text(f"シミュレーション実行中... {frame + 1}/{MAX_STEPS}")
+                status_text.text(f"シミュレーション実行中... 完了: {inactive_count}個 ({inactive_percent:.1f}%) | 進捗率: {progress*100:.1f}%")
+                
+                # 強制終了ボタンの状態を更新
+                if stop_button_placeholder.button("シミュレーション強制終了", key=f"stop_button_{frame}"):
+                    stop_simulation = True
+                    status_text.text("シミュレーションを強制終了しました。アニメーションを生成中...")
+                    break
         
         # プログレスバーを完了に設定
         progress_bar.progress(1.0)
-        status_text.text("シミュレーション完了！アニメーションを生成中...")
+        
+        # 強制終了かどうかに応じてメッセージを変更（アニメーション生成中）
+        if stop_simulation:
+            status_text.text(f"シミュレーションは強制終了されました。完了: {inactive_count}個 ({inactive_percent:.1f}%) | アニメーションを生成中...")
+        else:
+            status_text.text(f"シミュレーション完了！完了: {len(balls)}個 (100%) | アニメーションを生成中...")
         
         # シミュレーション結果を保存
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -400,7 +515,7 @@ def run_simulation():
             format='GIF',
             append_images=frames[1:],
             save_all=True,
-            duration=50,  # milliseconds
+            duration=25,  # milliseconds - 2倍の速さで再生
             loop=0
         )
         
@@ -414,8 +529,11 @@ def run_simulation():
             data_io.write(f"{final_pos[0]:.2f},{final_pos[1]:.2f}\t")
             data_io.write(f"{ball.reflection_count}\n")
         
-        # 終了メッセージの表示
-        status_text.text("シミュレーションが完了しました！")
+        # 終了メッセージの表示（アニメーション生成後）
+        if stop_simulation:
+            status_text.text(f"強制終了されたシミュレーションのアニメーションが生成されました。完了: {inactive_count}個 ({inactive_percent:.1f}%)")
+        else:
+            status_text.text("シミュレーションが完了しました！")
         
         # 最終的なグラフの表示
         st.pyplot(fig)
@@ -432,8 +550,9 @@ def run_simulation():
     
     except Exception as e:
         st.error(f"シミュレーション実行中にエラーが発生しました: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        # デバッグ情報の出力を削除
+        # import traceback
+        # traceback.print_exc()
         return False
 
 def main():
@@ -443,7 +562,39 @@ def main():
         layout="wide"
     )
     
-    st.title("多角形部屋での幾何音響シミュレーション")
+    st.title("多角形の簡易幾何音響シミュレーション")
+    
+    # カスタムCSS
+    st.markdown("""
+    <style>
+        .stButton > button {
+            font-size: 24px !important;
+            font-weight: bold !important;
+            height: 3em !important;
+            width: 100% !important;
+            margin-bottom: 10px !important;
+            background-color: #4CAF50 !important;
+            color: white !important;
+            border-radius: 10px !important;
+            border: 2px solid #2E7D32 !important;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2) !important;
+            transition: all 0.3s !important;
+        }
+        .stButton > button:hover {
+            background-color: #2E7D32 !important;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3) !important;
+            transform: translateY(-2px) !important;
+        }
+        /* シミュレーション実行ボタンのスタイル */
+        button[data-testid="baseButton-secondary"] {
+            background-color: #2196F3 !important;
+            border: 2px solid #0D47A1 !important;
+        }
+        button[data-testid="baseButton-secondary"]:hover {
+            background-color: #0D47A1 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
     
     # セッション状態の初期化
     if 'initialized' not in st.session_state:
@@ -452,8 +603,8 @@ def main():
         st.session_state.radius = 10.0
         st.session_state.source_x = 0.0
         st.session_state.source_y = 0.0
-        st.session_state.num_balls = 500
-        st.session_state.max_reflections = 10
+        st.session_state.num_balls = 300  # デフォルト粒子数を削減
+        st.session_state.max_reflections = 3  # 最大反射回数を5に設定
         st.session_state.particle_size = 10.0
         st.session_state.grid_spacing = 1
         st.session_state.downloads = None
@@ -462,7 +613,7 @@ def main():
     col1, col2 = st.columns([1, 3])
     
     with col1:
-        st.header("シミュレーション設定")
+        st.header("設定条件")
         
         # 部屋の形状設定
         st.subheader("部屋の形状")
@@ -478,7 +629,7 @@ def main():
         # 音響粒子設定
         st.subheader("音響粒子設定")
         st.session_state.num_balls = st.number_input("粒子数", min_value=10, max_value=1000, value=st.session_state.num_balls)
-        st.session_state.max_reflections = st.number_input("最大反射回数", min_value=1, max_value=50, value=st.session_state.max_reflections)
+        st.session_state.max_reflections = st.number_input("最大反射回数（＜5回）", min_value=1, max_value=5, value=st.session_state.max_reflections)
         st.session_state.particle_size = st.number_input("粒子サイズ", min_value=1.0, max_value=50.0, value=st.session_state.particle_size)
         
         st.caption("※粒子数や反射回数が増えると計算時間が長くなります")
@@ -490,10 +641,40 @@ def main():
         grid_selection = st.radio("グリッド間隔", options=list(grid_options.keys()), format_func=lambda x: grid_options[x])
         st.session_state.grid_spacing = grid_selection
         
+        # シミュレーション設定
+        # st.subheader("設定条件")
+        if 'ball_speed' not in st.session_state:
+            st.session_state.ball_speed = 0.1
+        st.session_state.ball_speed = st.slider("ボールの速度", min_value=0.01, max_value=0.2, value=st.session_state.ball_speed, step=0.01, 
+                                              help="値を小さくすると計算精度が上がりますが、シミュレーション時間が長くなります")
+        
         # アクションボタン
-        st.subheader("アクション")
-        preview_button = st.button("プレビュー")
-        run_button = st.button("シミュレーション実行")
+        # st.subheader("アクション")
+        # st.markdown("---")
+        
+        # プレビューボタン用のコンテナ
+        preview_container = st.container()
+        with preview_container:
+            # st.markdown("""
+            # <div style="padding: 10px; border: 3px solid #4CAF50; border-radius: 10px; background-color: rgba(76, 175, 80, 0.1);">
+            #     <h3 style="color: #4CAF50; text-align: center;">👁️ 条件プレビュー</h3>
+            # </div>
+            # """, unsafe_allow_html=True)
+            preview_button = st.button("👁️ プレビュー表示", key="preview_button", use_container_width=True, type="primary")
+        
+        st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+        
+        # シミュレーション実行ボタン用のコンテナ
+        run_container = st.container()
+        with run_container:
+            st.markdown("""
+            <div style="padding: 10px; border: 3px solid #2196F3; border-radius: 10px; background-color: rgba(33, 150, 243, 0.1);">
+                <h3 style="color: #2196F3; text-align: center;">🚀 シミュレーションを実行</h3>
+            </div>
+            """, unsafe_allow_html=True)
+            run_button = st.button("🚀 シミュレーション実行", key="run_button", use_container_width=True, type="primary")
+        
+        st.markdown("---")
     
     with col2:
         # プレビューまたはシミュレーション結果を表示
@@ -527,14 +708,14 @@ def main():
                     )
         
         elif preview_button:
-            st.header("シミュレーション条件プレビュー")
+            st.header("　　　条件プレビュー")
             fig = preview_conditions()
             if fig:
                 st.pyplot(fig)
         
         else:
             # 初期状態または他のボタンが押されていない場合はプレビューを表示
-            st.header("シミュレーション条件プレビュー")
+            st.header("　　　条件プレビュー")
             fig = preview_conditions()
             if fig:
                 st.pyplot(fig)
