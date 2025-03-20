@@ -58,3 +58,11 @@ MITライセンス
 ## 作者
 
 Yamanoboro
+
+## 幾何音響シミュレーション オンラインデモ
+
+幾何音響シミュレーションをインストールせずに試すには、以下のリンクからStreamlitアプリケーションにアクセスできます：
+
+- [幾何音響シミュレーション - Streamlitデモ](https://geometric-acoustics-simulation-6oovcfdw3x76gwzweuhyka.streamlit.app/)
+
+※サーバーの状態によってはロード時間がかかる場合があります。初回アクセス時に数十秒お待ちいただくことがあります。
